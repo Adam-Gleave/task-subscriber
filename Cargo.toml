@@ -1,0 +1,12 @@
+[package]
+name = "bee-console"
+version = "0.1.0"
+authors = ["Adam-Gleave <adamg108@hotmail.co.uk>"]
+edition = "2018"
+
+[dependencies]
+futures = "0.3.15"
+tokio = { version = "^1.5", features = ["rt", "sync", "time", "macros", "tracing"]}
+tracing = "0.1.26"
+tracing-core = "0.1.18"
+tracing-subscriber = { version = "0.2.18", default-features = false, features = ["fmt", "registry"] }
