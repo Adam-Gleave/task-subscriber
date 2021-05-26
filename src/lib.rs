@@ -42,19 +42,28 @@ pub enum Event {
 pub struct BeeLayer<F = DefaultFields> {
     tx: Sender<Event>,
     format: F,
+    collector: Option<Collector>,
 }
 
 impl BeeLayer {
-    pub fn new() -> (Self, Collector) {
+    pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(100);
 
-        (
-            Self {
-                tx: tx,
-                format: Default::default(),
-            },
-            Collector::new(rx, Duration::from_secs(Self::FLUSH_INTERVAL)),
-        )
+        Self {
+            tx: tx,
+            format: Default::default(),
+            collector: Some(Collector::new(rx, Duration::from_secs(Self::FLUSH_INTERVAL))),
+        }
+    }
+
+    pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let collector = self
+            .collector
+            .expect("No collector");
+
+        let collector = tokio::spawn(async move { collector.run().await });
+        let res = collector.await;
+        res.map_err(Into::into)
     }
 }
 
@@ -140,7 +149,7 @@ struct Stats {
     closed_at: Option<SystemTime>,
 }
 
-pub struct Collector {
+struct Collector {
     rx: Receiver<Event>,
     tasks: HashMap<Id, Task>,
     flush_interval: Duration,
@@ -155,7 +164,7 @@ impl Collector {
         }
     }
 
-    pub async fn run(mut self) {
+    pub(crate) async fn run(mut self) {
         let mut flush = tokio::time::interval(self.flush_interval); 
 
         loop {
