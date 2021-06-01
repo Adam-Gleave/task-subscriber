@@ -17,37 +17,47 @@ struct Task {
 
 #[derive(Default, Debug)]
 struct Stats {
-    polls: u64,
+    active: bool,
     current_polls: u64,
     created_at: Option<SystemTime>,
     first_poll: Option<SystemTime>,
     last_poll: Option<SystemTime>,
-    busy_time: Duration,
     closed_at: Option<SystemTime>,
+    busy_time: Duration,
+}
+
+impl Stats {
+    pub fn total_time(&self) -> Option<Duration> {
+        self.closed_at.and_then(|end| {
+            self.created_at.and_then(|start| {
+                end.duration_since(start).ok()
+            })
+        })
+    }
 }
 
 pub struct Collector {
-    rx: Receiver<Event>,
+    events: Receiver<Event>,
     tasks: HashMap<Id, Task>,
-    flush_interval: Duration,
+    tick_interval: Duration,
 }
 
 impl Collector {
-    pub(crate) fn new(rx: Receiver<Event>, flush_interval: Duration) -> Self {
+    pub fn new(events: Receiver<Event>, tick_interval: Duration) -> Self {
         Self {
-            rx,
+            events,
             tasks: Default::default(),
-            flush_interval,
+            tick_interval,
         }
     }
 
-    pub(crate) async fn run(mut self) {
-        let mut flush = tokio::time::interval(self.flush_interval); 
+    pub async fn run(mut self) {
+        let mut flush = tokio::time::interval(self.tick_interval); 
 
         loop {
             let _ = flush.tick().await;
 
-            while let Some(event) = self.rx.recv().now_or_never() {
+            while let Some(event) = self.events.recv().now_or_never() {
                 match event {
                     Some(event) => self.update(event),
                     None => {
@@ -57,7 +67,7 @@ impl Collector {
                 };
             }
 
-            self.send_and_flush();
+            self.produce_metrics();
         }
     }
 
@@ -65,61 +75,51 @@ impl Collector {
         match event {
             Event::Spawn { 
                 id, 
-                at, 
+                time, 
                 fields,
             } => {
                 let mut entry = &mut self.tasks.entry(id.clone()).or_default();
                 entry.fields = fields;
-                entry.stats.created_at = Some(at);
-
-                tracing::warn!("Spawned span");
+                entry.stats.created_at = Some(time);
+                entry.stats.active = true;
             }
-            Event::Enter {
-                id,
-                at,
-            } => {
+            Event::Enter { id, time } => {
                 let mut stats = &mut self.tasks.get_mut(&id).unwrap().stats;
 
                 if stats.current_polls == 0 {
-                    stats.last_poll = Some(at);
+                    stats.last_poll = Some(time);
                     if stats.first_poll == None {
-                        stats.first_poll = Some(at);
+                        stats.first_poll = Some(time);
                     }
-                    stats.polls += 1;
                 }
-                stats.current_polls += 1;
-                
-                tracing::warn!("Entered span");
-            }
-            Event::Exit {
-                id,
-                at,
-            } => {
-                let mut stats = &mut self.tasks.get_mut(&id).unwrap().stats;
 
+                stats.current_polls += 1;
+            }
+            Event::Exit { id, time } => {
+                let mut stats = &mut self.tasks.get_mut(&id).unwrap().stats;
                 stats.current_polls -= 1;
+
                 if stats.current_polls == 0 {
                     if let Some(last_poll) = stats.last_poll {
-                        stats.busy_time += at.duration_since(last_poll).unwrap();
+                        stats.busy_time += time.duration_since(last_poll).unwrap();
                     }
                 }
-
-                tracing::warn!("Exited span");
             }
-            Event::Close {
-                id,
-                at,
-            } => {
+            Event::Close { id, time } => {
                 let mut stats = &mut self.tasks.get_mut(&id).unwrap().stats;
-                stats.closed_at = Some(at);
-                tracing::warn!("Closed span");
+                stats.active = false;
+                stats.closed_at = Some(time);
             }
         }
     }
 
-    fn send_and_flush(&self) {
+    fn produce_metrics(&self) {
         for task in self.tasks.iter() {
-            tracing::info!("{:?}", task);
+            if task.1.stats.active {
+                tracing::info!("Task {} running", task.0.into_u64());
+            } else {
+                tracing::info!("Task {} inactive: total time {:?}", task.0.into_u64(), task.1.stats.total_time());
+            }
         }
     }
 }

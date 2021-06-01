@@ -15,22 +15,22 @@ use tracing_subscriber::{
     registry::LookupSpan,
 };
 
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 pub struct BeeLayer<F = DefaultFields> {
-    tx: Sender<Event>,
+    event_sender: Sender<Event>,
     format: F,
     collector: Option<Collector>,
 }
 
 impl BeeLayer {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, events) = mpsc::channel(100);
 
         Self {
-            tx: tx,
+            event_sender: tx,
             format: Default::default(),
-            collector: Some(Collector::new(rx, Duration::from_secs(Self::FLUSH_INTERVAL))),
+            collector: Some(Collector::new(events, Duration::from_secs(Self::TICK_INTERVAL))),
         }
     }
 
@@ -46,10 +46,10 @@ impl BeeLayer {
 }
 
 impl<F> BeeLayer<F> {
-    const FLUSH_INTERVAL: u64 = 1;
+    const TICK_INTERVAL: u64 = 1;
 
     fn send(&self, event: Event) {
-        match self.tx.try_reserve() {
+        match self.event_sender.try_reserve() {
             Ok(permit) => permit.send(event),
             Err(TrySendError::Closed(_)) => tracing::error!("Receiver terminated"),
             _ => tracing::error!("Unknown error"),
@@ -81,31 +81,18 @@ where
             }
         };
 
-        self.send(Event::Spawn {
-            id: id.clone(),
-            at: SystemTime::now(),
-            fields,
-        });
+        self.send(Event::spawn(id.clone(), fields));
     }
 
     fn on_enter(&self, id: &Id, _ctx: Context<'_, S>) {
-        self.send(Event::Enter {
-            at: SystemTime::now(),
-            id: id.clone(),
-        });
+        self.send(Event::enter(id.clone()));
     }
 
     fn on_exit(&self, id: &Id, _ctx: Context<'_, S>) {
-        self.send(Event::Exit {
-            at: SystemTime::now(),
-            id: id.clone(),
-        });
+        self.send(Event::exit(id.clone()));
     }
 
     fn on_close(&self, id: Id, _ctx: Context<'_, S>) {
-        self.send(Event::Close {
-            at: SystemTime::now(),
-            id: id.clone(),
-        });
+        self.send(Event::close(id.clone()));
     }
 }
